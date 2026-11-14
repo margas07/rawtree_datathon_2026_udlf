@@ -115,7 +115,7 @@ def recommend_live(req: Record, snap: dict[str, Any]) -> list[str]:
     fallbacks = _fallback_sources(req, snap)
     active = snap["active_products"]
     try:
-        candidates: list[str] | dict[str, float] | None = None
+        candidates: list[str] = list(fallbacks[0])
         new_prods = snap["new_products"]
         recent_pids = _extract_recent_pids(req.get("recent_views"))
         is_cold = bool(req.get("is_new_user")) or (
@@ -132,11 +132,10 @@ def recommend_live(req: Record, snap: dict[str, Any]) -> list[str]:
             ranked = ()
             if recent_pids:
                 last_pid = recent_pids[-1]
-                last_cat = snap["catalog"].get(last_pid, {}).get("category")
-                if last_cat:
-                    cat_items = snap["trending_by_category"].get(last_cat, ())
-                    # Avoid putting the exact item currently being viewed in slot 1
-                    ranked = [p for p in cat_items if p != last_pid] if last_pid in cat_items else cat_items
+                cov_items = snap.get("covisited", {}).get(last_pid, [])
+                last_cat = snap.get("catalog", {}).get(last_pid, {}).get("category")
+                cat_items = snap.get("trending_by_category", {}).get(last_cat, ()) if last_cat else ()
+                ranked = [p for p in (*cov_items, *cat_items) if p != last_pid]
 
         if isinstance(ranked, dict):
             ranked = _sort_dict_scores(ranked)
