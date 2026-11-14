@@ -106,6 +106,30 @@
   real-catalog benchmark PASS. Details:
   - Design as planned: `CatalogFeatures` (TF-IDF text ×1.0 + one-hot category
     0.8 / subcategory 1.2 / brand 0.6 + min-max log price 0.4, L2-normalised →
+- **M5 INTEGRATION DONE (2026-11-14, feat/integrate-miguel)** — Person 3's
+  modules wired into the live pipeline:
+  - `src/client.py` + `src/__init__.py` recreated (were never committed;
+    blocked all imports/tests) — `RawTreeClient`, `RawTreeError`,
+    `default_client()`.
+  - `state_manager.py`: `baseline_prices` captured from the ORIGINAL
+    `shop.catalog` load (pre-updates), plus `bandit_state` / `cold_features`
+    holders.
+  - `starter/recommender.py`: `cache.bandit_state = BanditState()`,
+    `_BaselineFeedbackIngestor` (FeedbackIngestor passing
+    `baseline_prices` into `update_price_drops`), background cold-features
+    builder (300 s), `MODEL_VERSION=v2-cold-bandit`, `recommend_live(req,
+    snap, cache)`.
+  - `predictor.py`: real cold-start routing (`is_new_user` OR `new_product`
+    in recent_views → cold candidates lead; warm users get new-product
+    injection at 0.5 weight), blend → `apply_online_adjustments(scores,
+    cache)` → `validate()` (10 distinct active guaranteed).
+  - `request_io.py`: `normalize_request` now also emits flattened
+    `context.device/region/page` aliases for cold_start.
+  - `scripts/dry_run.py` — READ-ONLY live verification (no submissions
+    inserts). Result: **200/200 valid outputs, p50 0.4 ms / p95 0.9 ms /
+    max 1.4 ms**, cold=79, warm-injected=112, bandit warmed from 4,916
+    real feedback rows; pytest **61/61 green**.
+
     cosine = dot), top-50 neighbours, `new_products` set, reverse map
     `established_to_new`, segment rankings with 4-level wildcard fallback
     `(d,r,p) → (d,r,*) → (d,*,*) → (*,*,*)`, smoothed rate

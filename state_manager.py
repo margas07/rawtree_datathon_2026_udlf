@@ -139,6 +139,13 @@ class LiveCache:
         self.baseline_rate_60d: dict[str, float] = {}
         self.active_products: set[str] = set()
         self.new_products: set[str] = set()
+        # P3 integration: bandit state + cold-start features (filled by the
+        # orchestrator at startup) and the ORIGINAL shop.catalog prices
+        # captured before any catalog_updates row is folded in — used as the
+        # baseline for bandit price-drop detection.
+        self.bandit_state: Any = None
+        self.cold_features: Any = None
+        self.baseline_prices: dict[str, float] = {}
         self.trends: dict[str, Any] = {
             "global": [],
             "top_selling": [],
@@ -242,6 +249,9 @@ class LiveCache:
         try:
             for row in self._query(sess, SQL_CATALOG, timeout=15.0):
                 self._update_product_dict(row, is_update=False)
+            # Baseline prices = the pre-update catalog snapshot; every later
+            # catalog_updates row overwrites self.prices, so capture now.
+            self.baseline_prices = dict(self.prices)
 
             try:
                 for row in self._query(sess, SQL_UPDATES.format(where=""), timeout=15.0):

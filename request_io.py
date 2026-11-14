@@ -66,7 +66,7 @@ def normalize_request(raw: Record) -> Record:
             "page": raw.get("context.page", ""),
         }
     recent = raw.get("recent_views")
-    return {
+    req = {
         "request_id": str(raw["request_id"]),
         "ts": str(raw.get("ts", "")),
         "user_id": str(raw.get("user_id", "")),
@@ -74,6 +74,13 @@ def normalize_request(raw: Record) -> Record:
         "context": ctx,
         "recent_views": recent if isinstance(recent, list) else [],
     }
+    # Flattened aliases so Person 3's cold_start.py (which reads
+    # request["context.device"] etc.) sees the same context either way.
+    if not isinstance(ctx, dict):  # pragma: no cover
+        return req
+    for key in ("device", "region", "page"):
+        req[f"context.{key}"] = ctx.get(key, "")
+    return req
 
 
 class SeenWindow:
