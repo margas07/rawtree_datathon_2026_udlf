@@ -1,0 +1,7 @@
+FAIL : CREATE TABLE IF NOT EXISTS experiments ENGINE = ReplicatedRawMergeTree
+       query failed [403]: {"error":"forbidden","message":"Forbidden","hint":"Creating tables explicitly requires admin permission."} for sql: CREATE TABLE IF NOT EXISTS experiments ENGINE = ReplicatedRawMergeTree...
+FAIL : CREATE TABLE IF NOT EXISTS team_12.experiments ENGINE = ReplicatedRawMergeTree
+       query failed [403]: {"error":"forbidden","message":"Forbidden","hint":"Creating tables explicitly requires admin permission."} for sql: CREATE TABLE IF NOT EXISTS team_12.experiments ENGINE = ReplicatedRawMergeTree...
+tables visible: [{'database': 'team_12', 'name': 'feedback', 'engine': 'ReplicatedMergeTree'}, {'database': 'team_12', 'name': 'scratch', 'engine': 'ReplicatedMergeTree'}, {'database': 'team_12', 'name': 'submissions', 'engine': 'ReplicatedMergeTree'}]
+insert/read-back failed: insert into team_12.experiments failed [400]: {"error":"rawtree_error","message":"Table experiments not found.","hint":"Check the table name and make sure it exists in your database."}
+=== DDL probe INCONCLUSIVE/FAIL ===

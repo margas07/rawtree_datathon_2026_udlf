@@ -1,0 +1,35 @@
+=== M3 bandit SQL probe -- 2026-11-14 17:12:10 ===
+
+[1] recent feedback window:
+SELECT request_id::String AS request_id, ts,
+       shown, clicked::String AS clicked, purchased::String AS purchased,
+       served_by::String AS served_by, fallback_reason::String AS fallback_reason
+FROM team_12.feedback
+WHERE request_id != '__init__'
+ORDER BY ts DESC
+LIMIT 500
+OK: 500 rows in 1.3s
+  first row keys: ['clicked', 'fallback_reason', 'purchased', 'request_id', 'served_by', 'shown', 'ts']
+  served_by mix: {'team': 484, 'fallback': 16}
+  folded 484/500 rows (fallback/init excluded)
+
+[2] incremental poll (watermark = '2026-11-14 16:12:06.252'):
+OK: 0 new rows in 0.2s
+  folded 0 new rows; total_requests=484
+
+[3] price changes:
+SELECT product_id::String AS product_id,
+       argMax(price_eur, ts::DateTime64(3)) AS latest_price,
+       max(price_eur)                     AS ref_price
+FROM shop.catalog_updates
+WHERE change::String = 'price_change'
+GROUP BY product_id
+OK: 1286 products with price_change history (0.2s)
+  sample row: {'product_id': 'p_84d9b8', 'latest_price': 37.99, 'ref_price': 37.99}
+  active price drops: 0; deepest 5: []
+
+[4] FeedbackIngestor.run_once() live smoke:
+OK: run_once folded 3 rows; errors=0
+  state summary: {'requests_folded': 487, 'products_tracked': 115, 'exposure': 1210.1, 'clicks': 15, 'purchases': 4, 'ctr': 0.0124, 'cvr': 0.0033, 'price_drops': 0, 'last_ts': '2026-11-14T16:12:07.280000'}
+
+VERDICT: PASS -- bandit SQL paths all validated live

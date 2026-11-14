@@ -1,0 +1,21 @@
+=== M2b cold-start benchmark -- 2026-11-14 16:50:53 ===
+catalog rows: 5000 (query 1.5s)
+catalog_updates rows: 3222 (200 new_product) (query 0.4s)
+merged catalog rows: 5200 (+200 new products)
+SEGMENT_STATS_SQL OK: 237815 rows (2.4s)
+  sample: {'device': 'ios', 'region': 'Andalucía', 'page': 'home', 'product_id': 'p_627009', 'impressions': 3}
+build_catalog_features: 3.4s (5200 products, matrix (5200, 423), 200 new products, 124 segment keys)
+active products: 5200
+requests fetched: 600 (query 0.4s)
+
+branch mix over 300 requests: {'A_blank': 20, 'B_new_with_views': 69, 'C_inject_only': 172, 'warm_no_views': 39, 'no_candidates': 59}
+candidates/request: mean=25.3 max=235
+latency ms: mean=0.383 p50=0.355 p95=0.569 p99=0.773 max=1.016
+  req=r_bcdf474a0919b474 new_user=False views=['p_781dda', 'p_8914eb', 'p_da9363']
+    -> [('p_782b94', 1.0839669552733948), ('p_95462b', 1.0358224614477702), ('p_b12286', 0.9179892175022715), ('p_909b4d', 0.8636367387854728), ('p_a0bc31', 0.8463484416905493), ('p_e2e96d', 0.8359619178003229), ('p_fb7426', 0.5274246227906164)]
+  req=r_88f4fa9ce94f0d16 new_user=True views=['p_66ec7a', 'p_ef6af6', 'p_747bac']
+    -> [('p_4b66b0', 1.6957840184505804), ('p_3ff885', 1.6846686830756883), ('p_c104eb', 1.6580623958677663), ('p_989e85', 1.6546245777353557), ('p_07b81b', 1.6543029678842127), ('p_40bbb4', 1.647703534983851), ('p_050730', 1.6447368153068374), ('p_8a8f77', 1.6197184410415444), ('p_dcfc9a', 1.535722849443605), ('p_ad7f5d', 1.534495608887673)]
+  req=r_bebd225dc267e84e new_user=False views=['p_aa2e54', 'p_271d3f', 'p_8fbfd1']
+    -> [('p_8b2378', 1.07262885766741), ('p_782b94', 0.8832419234724738), ('p_909b4d', 0.8823410646665969), ('p_ff2c4b', 0.5164946459137203), ('p_d785e0', 0.4467717380433919)]
+
+VERDICT: PASS -- request path < 50 ms budget

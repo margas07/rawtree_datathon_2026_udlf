@@ -1,0 +1,32 @@
+=== M4 jury/KPI probe -- 2026-11-14 18:26:10 ===
+KPI collection errors: none
+  requests: 74988
+  our_requests: 27977
+  our_share: 0.3731
+  fallback_requests: 47011
+  ctr: 0.0254
+  cvr: 0.0079
+  revenue_eur: 15430.07
+  revenue_per_request: 0.2058
+  on_time_rate: 0.9971863290261498
+  team latency p50/p95/p99: 1060.5/1964.8999999999996/2902.1800000000003 ms
+  by_served_by: ['fallback', 'team']
+  fallback_reasons: {'missing': 47010, '': 27980, 'invalid': 1}
+  hourly rows: 8
+bandit warm-up: fetched 2000, folded 1837
+  summary: {"requests_folded": 1837, "products_tracked": 129, "exposure": 4564.7, "clicks": 45, "purchases": 17, "ctr": 0.0099, "cvr": 0.0037, "price_drops": 0, "last_ts": "2026-11-14T17:26:05.957000"}
+cold-start join: cells=4; errors=none
+  ('cold', 'fallback'): requests=14077 ctr=0.0331 cvr=0.0134
+  ('cold', 'team'): requests=8379 ctr=0.0403 cvr=0.0174
+  ('warm', 'fallback'): requests=32934 ctr=0.0196 cvr=0.0046
+  ('warm', 'team'): requests=19601 ctr=0.0231 cvr=0.0056
+slot CTR: s1=0.0107 s2=0.0060 s3=0.0044 s4=0.0034 s5=0.0028 s6=0.0025 s7=0.0022 s8=0.0020 s9=0.0017 s10=0.0016
+logger push_errors: 0; last_push_error: None
+team_12.scratch rows named m4_probe: 2; typed-experiment m4_probe: 1
+offline smoke: cut=2026-11-07, sessions=300, best-sellers=4787 (0.3s)
+  baseline eval: {"n_test": 300, "hit_rate@10": 0.25, "ips_ctr_slot1": 0.0, "snips_ctr_slot1": 0.0, "slot1_matches": 12}
+  logger push_errors after eval row: 0
+charts: ['cvr.png', 'cold_start_lift.png', 'latency_percentiles.png', 'slot_ctr_curve.png']; warnings=none
+jury report: 108 lines -> jury_report.md; experiments=10; warnings=none
+verdict: kpi_ok=True push_ok=True offline_ok=True charts_ok=True report=True
+=== M4 probe PASS (5.8s) ===
