@@ -87,6 +87,38 @@ HAVING views_15m >= 3
 ORDER BY lift DESC, views_15m DESC
 LIMIT 30"""
 
+SQL_COVISITED_HISTORY = """
+SELECT p, groupArray(20)(q) AS top_q
+FROM (
+    SELECT a.product_id AS p, b.product_id AS q, count() AS n
+    FROM (SELECT session_id::String AS session_id, product_id::String AS product_id
+          FROM shop.history_events WHERE event_type = 'view') AS a
+    INNER JOIN (SELECT session_id::String AS session_id, product_id::String AS product_id
+                FROM shop.history_events WHERE event_type = 'view') AS b
+      ON a.session_id = b.session_id
+    WHERE a.product_id != b.product_id
+    GROUP BY p, q
+    ORDER BY p ASC, n DESC
+    LIMIT 20 BY p
+)
+GROUP BY p"""
+
+SQL_COVISITED_LIVE = """
+SELECT p, groupArray(20)(q) AS top_q
+FROM (
+    SELECT a.product_id AS p, b.product_id AS q, count() AS n
+    FROM (SELECT session_id::String AS session_id, product_id::String AS product_id
+          FROM shop.events WHERE event_type = 'view' AND ts > now() - INTERVAL 120 MINUTE) AS a
+    INNER JOIN (SELECT session_id::String AS session_id, product_id::String AS product_id
+                FROM shop.events WHERE event_type = 'view' AND ts > now() - INTERVAL 120 MINUTE) AS b
+      ON a.session_id = b.session_id
+    WHERE a.product_id != b.product_id
+    GROUP BY p, q
+    ORDER BY p ASC, n DESC
+    LIMIT 20 BY p
+)
+GROUP BY p"""
+
 
 def load_env() -> tuple[str, str, str]:
     """Carga RAWTREE_API_URL, TEAM_ID y RAWTREE_API_KEY desde .env (raíz del repo) o entorno."""
@@ -137,6 +169,7 @@ class LiveCache:
         self.prices: dict[str, float] = {}
         self.price_drops: dict[str, float] = {}
         self.baseline_rate_60d: dict[str, float] = {}
+        self.covisited: dict[str, list[str]] = {}
         self.active_products: set[str] = set()
         self.new_products: set[str] = set()
         self.trends: dict[str, Any] = {
@@ -187,6 +220,7 @@ class LiveCache:
             "in_stock": in_stock,
         }
         self.prices[pid] = new_price
+        self.covisited.setdefault(pid, [])
 
         if is_active and in_stock:
             self.active_products.add(pid)
@@ -206,15 +240,45 @@ class LiveCache:
         if ts > self._last_update_ts:
             self._last_update_ts = ts
 
+    def _merge_covisited_rows(self, rows: list[dict[str, Any]]) -> None:
+        """Actualiza self.covisited[p] priorizando las nuevas co-visitas y creciendo hasta máx 20."""
+        for row in rows:
+            pid = str(row["p"])
+            incoming = [str(q) for q in (row.get("top_q") or []) if str(q) != pid]
+            existing = self.covisited.get(pid, [])
+            merged: list[str] = []
+            seen: set[str] = set()
+            for q in incoming + existing:
+                if q not in seen and q != pid:
+                    merged.append(q)
+                    seen.add(q)
+                    if len(merged) == 20:
+                        break
+            assert isinstance(merged, list) and len(merged) <= 20 and len(merged) == len(seen) and pid not in seen
+            self.covisited[pid] = merged
+
     def _build_snapshot(self) -> dict[str, Any]:
         """Construye el diccionario único que reciben predictor.py y los modelos."""
         active = frozenset(self.active_products)
+        covisited_snap: dict[str, list[str]] = {}
+        for pid, q_list in self.covisited.items():
+            filtered = [q for q in q_list if q in active and q != pid][:20]
+            assert (
+                isinstance(filtered, list)
+                and len(filtered) <= 20
+                and len(filtered) == len(set(filtered))
+                and pid not in filtered
+            ), f"Invalid covisited list for {pid}"
+            covisited_snap[pid] = filtered
+
+        assert isinstance(covisited_snap, dict)
         return {
             "active_products": active,
             "prices": dict(self.prices),
             "catalog": dict(self.catalog),
             "new_products": frozenset(self.new_products),
             "price_drops": dict(self.price_drops),
+            "covisited": covisited_snap,
             "trending_global": [p for p in self.trends["global"] if p in active],
             "top_selling": [p for p in self.trends["top_selling"] if p in active],
             "top_viewed": [p for p in self.trends["top_viewed"] if p in active],
@@ -256,6 +320,12 @@ class LiveCache:
             self.baseline_rate_60d = {
                 str(r["product_id"]): float(r.get("events_per_hour_60d", 0.0)) for r in hist_rows
             }
+
+            try:
+                cov_hist = self._query(sess, SQL_COVISITED_HISTORY, timeout=25.0)
+                self._merge_covisited_rows(cov_hist)
+            except Exception as e:
+                print(f"[state_manager] covisited history init skipped: {e}")
 
             try:
                 self._refresh_trends(sess)
@@ -312,6 +382,12 @@ class LiveCache:
                 merged_spikes.append(pid)
         if merged_spikes:
             self.trends["spikes"] = merged_spikes[:30]
+
+        try:
+            cov_live = self._query(sess, SQL_COVISITED_LIVE, timeout=15.0)
+            self._merge_covisited_rows(cov_live)
+        except Exception as e:
+            print(f"[state_manager] covisited live refresh skipped: {e}")
 
         self._write_to_scratch(sess)
         return True

@@ -132,11 +132,10 @@ def recommend_live(req: Record, snap: dict[str, Any]) -> list[str]:
             ranked = ()
             if recent_pids:
                 last_pid = recent_pids[-1]
+                cov_items = snap["covisited"].get(last_pid, [])
                 last_cat = snap["catalog"].get(last_pid, {}).get("category")
-                if last_cat:
-                    cat_items = snap["trending_by_category"].get(last_cat, ())
-                    # Avoid putting the exact item currently being viewed in slot 1
-                    ranked = [p for p in cat_items if p != last_pid] if last_pid in cat_items else cat_items
+                cat_items = snap["trending_by_category"].get(last_cat, ()) if last_cat else ()
+                ranked = [p for p in (*cov_items, *cat_items) if p != last_pid]
 
         if isinstance(ranked, dict):
             ranked = _sort_dict_scores(ranked)
