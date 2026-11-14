@@ -170,6 +170,7 @@ class LiveCache:
         self.prices: dict[str, float] = {}
         self.price_drops: dict[str, float] = {}
         self.baseline_rate_60d: dict[str, float] = {}
+
         self.organic_cvr_60d: dict[str, float] = {}
         self.velocity: dict[str, float] = {}
         self.covisited: dict[str, list[str]] = {}
@@ -260,6 +261,7 @@ class LiveCache:
                     seen.add(q)
                     if len(merged) == 20:
                         break
+            assert isinstance(merged, list) and len(merged) <= 20 and len(merged) == len(seen) and pid not in seen
             self.covisited[pid] = merged
 
     def _build_snapshot(self) -> dict[str, Any]:
@@ -268,6 +270,13 @@ class LiveCache:
         covisited_snap: dict[str, list[str]] = {}
         for pid, q_list in self.covisited.items():
             filtered = [q for q in q_list if q in active and q != pid][:20]
+            covisited_snap[pid] = filtered
+            assert (
+                isinstance(filtered, list)
+                and len(filtered) <= 20
+                and len(filtered) == len(set(filtered))
+                and pid not in filtered
+            ), f"Invalid covisited list for {pid}"
             covisited_snap[pid] = filtered
 
         catalog_snapshot: dict[str, dict[str, Any]] = {}
@@ -278,6 +287,9 @@ class LiveCache:
             entry["velocity"] = self.velocity.get(pid, entry.get("velocity", 0.0))
             catalog_snapshot[pid] = entry
 
+
+
+        assert isinstance(covisited_snap, dict)
         return {
             "active_products": active,
             "prices": dict(self.prices),
@@ -330,6 +342,12 @@ class LiveCache:
                 str(r["product_id"]): float(r.get("organic_cvr", 0.0)) for r in hist_rows
             }
             self.velocity = dict(self.baseline_rate_60d)
+
+            try:
+                cov_hist = self._query(sess, SQL_COVISITED_HISTORY, timeout=25.0)
+                self._merge_covisited_rows(cov_hist)
+            except Exception as e:
+                print(f"[state_manager] covisited history init skipped: {e}")
 
             try:
                 cov_hist = self._query(sess, SQL_COVISITED_HISTORY, timeout=25.0)
