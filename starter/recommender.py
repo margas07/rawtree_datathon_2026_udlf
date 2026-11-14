@@ -1,130 +1,104 @@
-"""Baseline recommender: the all-time best sellers that are in stock.
+"""Orchestrator loop for RawTree Datathon.
 
-    python starter/recommender.py        # reads TEAM_ID and RAWTREE_API_KEY from .env or the environment
+    python starter/recommender.py
 
-pull → predict → push: it polls shop.requests, answers every new request and inserts the
-answers in batches into team_NN.submissions. recommend() is the part to replace: it is
-exactly what the leaderboard calls "baseline", and what shoppers see when an answer is
-missing, late or invalid (the fallback).
+Connects the three layers:
+1. `request_io.py`: receives new requests (`pull`) and sends batch answers (`push`).
+2. `predictor.py`: runs team algorithms (`recommend_live`) and strict validation (`validate`).
+3. `state_manager.py`: keeps `LiveCache` updated in background threads.
+
+Also re-exports `best_sellers` and `recommend` for `starter/offline_eval.ipynb`.
 """
 from __future__ import annotations
 
 import os
+import sys
 import time
+from collections import deque
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
-from dotenv import load_dotenv
 
-import requests
+ROOT_DIR = Path(__file__).resolve().parent.parent
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
 
-load_dotenv()
+from predictor import recommend, recommend_live, validate  # noqa: E402, F401
+from request_io import (  # noqa: E402, F401
+    TEAM,
+    SeenWindow,
+    best_sellers,
+    normalize_request,
+    pull,
+    push,
+    query,
+)
+from state_manager import LiveCache  # noqa: E402
 
-for line in Path(".env").read_text().splitlines() if Path(".env").exists() else []:
-    key, _, value = line.partition("=")
-    os.environ.setdefault(key.strip(), value.strip())
-API = os.environ.get("RAWTREE_API_URL", "https://api.rawtree.com")
-TEAM = os.environ["TEAM_ID"]
-http = requests.Session()
-http.headers["Authorization"] = f"Bearer {os.environ['RAWTREE_API_KEY']}"
-
-SALES = """
-SELECT product_id, count() AS n
-FROM shop.history_events
-WHERE event_type = 'purchase'{sales}
-GROUP BY product_id"""
-"""How many times each product was bought in the historical events."""
-
-NEW_REQUESTS = """
-SELECT request_id, recent_views
-FROM shop.requests
-ORDER BY ts DESC
-LIMIT 50"""
-"""The 50 most recent recommendation requests, newest first."""
-
-OUT_OF_STOCK = """
-SELECT product_id::String AS product_id
-FROM shop.catalog_updates
-WHERE change::String IN ('out_of_stock', 'back_in_stock')
-GROUP BY product_id
-HAVING argMax(change::String, ts::DateTime64(3)) = 'out_of_stock'"""
-"""Products whose latest stock change is a stock-out."""
-
-Record = dict[str, Any]
-"""RawTree returns rows as JSON objects: {"column": value, ...}"""
+MODEL_VERSION = os.environ.get("MODEL_VERSION", "v1-live-cache")
 
 
-def query(sql: str) -> list[Record]:
-    r = http.post(f"{API}/v1/query", json={"sql": sql}, timeout=10)
-    r.raise_for_status()
-    return r.json()["data"]
-
-
-def best_sellers(until: str | None = None) -> list[str]:
-    """Every product ever bought, best-selling first (ties: higher product_id first).
-
-    `until` ('YYYY-MM-DD') restricts the history the ranking is built from, for offline
-    evaluation. Live it is computed once, at start: the ranking never refreshes.
-    """
-    sales_cut = f" AND ts < '{until}'" if until else ""
-    sales = sorted(((int(r["n"]), r["product_id"]) for r in query(SALES.format(sales=sales_cut))), reverse=True)
-    return [product for _, product in sales]
-
-
-def out_of_stock() -> set[str]:
-    """Products out of stock right now. Recommending one makes the whole answer invalid."""
-    return {r["product_id"] for r in query(OUT_OF_STOCK)}
-
-
-def pull(seen: set[str]) -> list[Record]:
-    """New shop.requests records not answered yet."""
-    fresh: list[Record] = []
-    for req in query(NEW_REQUESTS):
-        if req["request_id"] not in seen:
-            seen.add(req["request_id"])
-            fresh.append(req)
-    return fresh
-
-
-def predict(requests: list[Record], best: list[str], unavailable: set[str]) -> list[Record]:
-    """One submission per request."""
-    return [{"request_id": req["request_id"],
-             "items": recommend(req["recent_views"], best, unavailable),
-             "model_version": "baseline"} for req in requests]
-
-
-def recommend(recent_views: list[Record], best: list[str], unavailable: set[str] = frozenset()) -> list[str]:
-    """10 product IDs for one request: the part teams replace. Here: the first 10 best sellers in stock."""
-    return [product for product in best if product not in unavailable][:10]
-
-
-def push(answers: list[Record]) -> None:
-    """Batch insert into team_NN.submissions."""
-    http.post(f"{API}/v1/tables/submissions", params={"database": TEAM}, json=answers, timeout=10).raise_for_status()
-    print(f"answered {len(answers)}")
+def _latency_ms(ts_str: str, now_utc: float) -> float | None:
+    if not ts_str:
+        return None
+    try:
+        iso = ts_str[:-1] + "+00:00" if ts_str.endswith("Z") else ts_str + "+00:00"
+        dt = datetime.fromisoformat(iso)
+        return max(0.0, (now_utc - dt.timestamp()) * 1000.0)
+    except Exception:
+        return None
 
 
 def main() -> None:
-    best: list[str] = []
-    seen = set[str]()
-    unavailable: set[str] = set()
-    stock_checked = 0.0
+    cache = LiveCache(catalog_interval=1.5, trends_interval=60.0)
+    print(f"[recommender] initializing LiveCache for {TEAM} ({MODEL_VERSION})...")
     while True:
         try:
-            if not best:
-                best = best_sellers()
-            if time.time() - stock_checked >= 1:  # stock changes every few minutes: once a second is plenty
-                stock_checked = time.time()
-                try:
-                    unavailable = out_of_stock()
-                except Exception as e:  # keep answering with the last known stock
-                    print(f"stock check failed: {e}")
-            answers = predict(pull(seen), best, unavailable)
-            if answers:
-                push(answers)
-        except Exception as e:  # keep running: shoppers keep arriving while you sleep
-            print(f"error: {e}")
+            cache.start()
+            break
+        except Exception as e:
+            print(f"[recommender] LiveCache init failed, retrying in 2s: {e}")
             time.sleep(2)
-        time.sleep(0.3)
+    print(f"[recommender] LiveCache ready: {len(cache.get_active())} active products")
+
+    seen = SeenWindow(maxlen=5000)
+    last_ts = ""
+    latencies: deque[float] = deque(maxlen=500)
+    last_stats_log = time.time()
+
+    while True:
+        loop_t0 = time.monotonic()
+        try:
+            reqs, last_ts = pull(seen, last_ts)
+            if reqs:
+                snap = cache.get_snapshot()
+                answers = [
+                    {
+                        "request_id": req["request_id"],
+                        "items": recommend_live(req, snap),
+                        "model_version": MODEL_VERSION,
+                    }
+                    for req in reqs
+                ]
+                push(answers)
+                now_utc = time.time()
+                for req in reqs:
+                    lat = _latency_ms(req["ts"], now_utc)
+                    if lat is not None:
+                        latencies.append(lat)
+                print(f"answered {len(answers)}")
+
+            if time.time() - last_stats_log >= 30.0 and latencies:
+                ordered = sorted(latencies)
+                p50 = ordered[len(ordered) // 2]
+                p95 = ordered[min(len(ordered) - 1, int(len(ordered) * 0.95))]
+                print(f"[latency] n={len(ordered)} p50={p50:.0f}ms p95={p95:.0f}ms")
+                last_stats_log = time.time()
+        except Exception as e:
+            print(f"[recommender] loop error: {e}")
+            time.sleep(0.15)
+
+        elapsed = time.monotonic() - loop_t0
+        time.sleep(max(0.0, 0.15 - elapsed))
 
 
 if __name__ == "__main__":
