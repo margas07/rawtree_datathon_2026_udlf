@@ -34,7 +34,7 @@ from request_io import (  # noqa: E402, F401
 )
 from state_manager import LiveCache  # noqa: E402
 
-MODEL_VERSION = os.environ.get("MODEL_VERSION", "v1-live-cache")
+MODEL_VERSION = os.environ.get("MODEL_VERSION", "jano-v1")
 
 
 def _latency_ms(ts_str: str, now_utc: float) -> float | None:

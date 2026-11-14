@@ -23,7 +23,7 @@ def get_catalog_and_stats() -> dict[str, dict[str, Any]]:
     
     stats_sql: str = """
         SELECT product_id::String as product_id, 
-               countIf(event_type='purchase') / greatest(countIf(event_type='view'), 1.0) as org_cvr,
+               countIf(event_type='purchase') / greatest(countIf(event_type='view'), 1) as org_cvr,
                count() / (60.0 * 24.0) as velocity
         FROM shop.history_events 
         GROUP BY product_id
