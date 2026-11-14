@@ -13,8 +13,11 @@ import os
 import time
 from pathlib import Path
 from typing import Any
+from dotenv import load_dotenv
 
 import requests
+
+load_dotenv()
 
 for line in Path(".env").read_text().splitlines() if Path(".env").exists() else []:
     key, _, value = line.partition("=")
@@ -74,7 +77,7 @@ def out_of_stock() -> set[str]:
 
 def pull(seen: set[str]) -> list[Record]:
     """New shop.requests records not answered yet."""
-    fresh = []
+    fresh: list[Record] = []
     for req in query(NEW_REQUESTS):
         if req["request_id"] not in seen:
             seen.add(req["request_id"])
