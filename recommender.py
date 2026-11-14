@@ -34,7 +34,7 @@ from request_io import (  # noqa: E402, F401
 )
 from state_manager import LiveCache  # noqa: E402
 
-MODEL_VERSION = os.environ.get("MODEL_VERSION", "jano-v1")
+MODEL_VERSION = os.environ.get("MODEL_VERSION", "plutus-v1")
 
 
 def _latency_ms(ts_str: str, now_utc: float) -> float | None:
@@ -98,7 +98,8 @@ def main() -> None:
             time.sleep(0.15)
 
         elapsed = time.monotonic() - loop_t0
-        time.sleep(max(0.0, 0.15 - elapsed))
+        if not reqs:
+            time.sleep(max(0.0, 0.08 - elapsed))
 
 
 if __name__ == "__main__":

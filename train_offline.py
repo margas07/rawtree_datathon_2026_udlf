@@ -112,7 +112,7 @@ def train_model() -> None:
     X: pd.DataFrame = df[features]
     y: pd.Series = df['is_purchased']
     
-    weights: pd.Series = 1.0 / df['propensity']
+    weights = np.clip(1.0 / np.maximum(df['propensity'].fillna(0.1).to_numpy(), 0.01), 0.5, 20.0)
     
     print("Training LightGBM...")
     model: lgb.LGBMClassifier = lgb.LGBMClassifier(
