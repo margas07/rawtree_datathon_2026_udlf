@@ -33,10 +33,11 @@ FROM shop.catalog_updates
 {where}
 ORDER BY ts ASC"""
 
-# 60-day baseline purchases + total events per hour (for best_sellers & 60d velocity spikes)
+# 60-day baseline purchases, organic CVR + total events per hour (for best_sellers, CVR & velocity)
 SQL_HISTORY_BASELINE = """
 SELECT product_id::String AS product_id,
        countIf(event_type = 'purchase') AS purchases,
+       countIf(event_type = 'purchase') / greatest(countIf(event_type = 'view'), 1.0) AS organic_cvr,
        count() / (60.0 * 24.0) AS events_per_hour_60d
 FROM shop.history_events
 GROUP BY product_id
@@ -169,6 +170,9 @@ class LiveCache:
         self.prices: dict[str, float] = {}
         self.price_drops: dict[str, float] = {}
         self.baseline_rate_60d: dict[str, float] = {}
+
+        self.organic_cvr_60d: dict[str, float] = {}
+        self.velocity: dict[str, float] = {}
         self.covisited: dict[str, list[str]] = {}
         self.active_products: set[str] = set()
         self.new_products: set[str] = set()
@@ -218,6 +222,9 @@ class LiveCache:
             "description": row.get("description", ""),
             "is_active": is_active,
             "in_stock": in_stock,
+            "price_drop_flag": 1.0 if pid in self.price_drops else 0.0,
+            "organic_cvr": self.organic_cvr_60d.get(pid, prev.get("organic_cvr", 0.0)),
+            "velocity": self.velocity.get(pid, prev.get("velocity", 0.0)),
         }
         self.prices[pid] = new_price
         self.covisited.setdefault(pid, [])
@@ -263,6 +270,7 @@ class LiveCache:
         covisited_snap: dict[str, list[str]] = {}
         for pid, q_list in self.covisited.items():
             filtered = [q for q in q_list if q in active and q != pid][:20]
+            covisited_snap[pid] = filtered
             assert (
                 isinstance(filtered, list)
                 and len(filtered) <= 20
@@ -271,11 +279,21 @@ class LiveCache:
             ), f"Invalid covisited list for {pid}"
             covisited_snap[pid] = filtered
 
+        catalog_snapshot: dict[str, dict[str, Any]] = {}
+        for pid, item in self.catalog.items():
+            entry = dict(item)
+            entry["price_drop_flag"] = 1.0 if pid in self.price_drops else 0.0
+            entry["organic_cvr"] = self.organic_cvr_60d.get(pid, entry.get("organic_cvr", 0.0))
+            entry["velocity"] = self.velocity.get(pid, entry.get("velocity", 0.0))
+            catalog_snapshot[pid] = entry
+
+
+
         assert isinstance(covisited_snap, dict)
         return {
             "active_products": active,
             "prices": dict(self.prices),
-            "catalog": dict(self.catalog),
+            "catalog": catalog_snapshot,
             "new_products": frozenset(self.new_products),
             "price_drops": dict(self.price_drops),
             "covisited": covisited_snap,
@@ -320,6 +338,16 @@ class LiveCache:
             self.baseline_rate_60d = {
                 str(r["product_id"]): float(r.get("events_per_hour_60d", 0.0)) for r in hist_rows
             }
+            self.organic_cvr_60d = {
+                str(r["product_id"]): float(r.get("organic_cvr", 0.0)) for r in hist_rows
+            }
+            self.velocity = dict(self.baseline_rate_60d)
+
+            try:
+                cov_hist = self._query(sess, SQL_COVISITED_HISTORY, timeout=25.0)
+                self._merge_covisited_rows(cov_hist)
+            except Exception as e:
+                print(f"[state_manager] covisited history init skipped: {e}")
 
             try:
                 cov_hist = self._query(sess, SQL_COVISITED_HISTORY, timeout=25.0)
@@ -351,6 +379,8 @@ class LiveCache:
             by_views = sorted(global_rows, key=lambda r: int(r.get("views", 0)), reverse=True)
             self.trends["top_selling"] = [str(r["product_id"]) for r in by_purchases[:100]]
             self.trends["top_viewed"] = [str(r["product_id"]) for r in by_views[:100]]
+            for r in global_rows:
+                self.velocity[str(r["product_id"])] = float(r.get("total_events_60m", 0.0))
 
         by_cat = _group_by_key(self._query(sess, SQL_TREND_CATEGORY, timeout=8.0), "category")
         # Asegura que los new_products en tendencia también entren en su categoría

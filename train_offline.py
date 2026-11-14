@@ -18,19 +18,38 @@ def query_to_df(sql: str) -> pd.DataFrame:
     return pd.DataFrame(r.json()["data"])
 
 def get_catalog_and_stats() -> dict[str, dict[str, Any]]:
-    """Fetches product metadata and historical organic CVR."""
+    """Fetches product metadata, historical organic CVR, and velocity."""
     catalog: pd.DataFrame = query_to_df("SELECT product_id::String as product_id, price_eur::Float64 as price, subcategory::String as subcategory FROM shop.catalog")
     
-    cvr_sql: str = """
+    stats_sql: str = """
         SELECT product_id::String as product_id, 
-               countIf(event_type='purchase') / greatest(countIf(event_type='view'), 1) as org_cvr
+               countIf(event_type='purchase') / greatest(countIf(event_type='view'), 1.0) as org_cvr,
+               count() / (60.0 * 24.0) as velocity
         FROM shop.history_events 
         GROUP BY product_id
     """
-    cvr_df: pd.DataFrame = query_to_df(cvr_sql)
+    stats_df: pd.DataFrame = query_to_df(stats_sql)
     
-    merged: pd.DataFrame = catalog.merge(cvr_df, on='product_id', how='left').fillna({'org_cvr': 0.0})
+    merged: pd.DataFrame = catalog.merge(stats_df, on='product_id', how='left').fillna({'org_cvr': 0.0, 'velocity': 0.0})
     return merged.set_index('product_id').to_dict('index')
+
+def get_covisit_matrix(limit_per_product: int = 20) -> dict[str, list[str]]:
+    """Fetches top co-viewed products from history_events before test cut."""
+    print("Fetching historical co-visit matrix...")
+    sql: str = f"""
+        SELECT a.product_id::String AS p, b.product_id::String AS q, count() AS n
+        FROM (SELECT session_id::String AS session_id, product_id::String AS product_id FROM shop.history_events WHERE event_type = 'view' AND ts < '2026-11-07') AS a
+        INNER JOIN (SELECT session_id::String AS session_id, product_id::String AS product_id FROM shop.history_events WHERE event_type = 'view' AND ts < '2026-11-07') AS b
+          ON a.session_id = b.session_id
+        WHERE a.product_id != b.product_id
+        GROUP BY p, q ORDER BY n DESC LIMIT {limit_per_product} BY p
+    """
+    try:
+        coviews: pd.DataFrame = query_to_df(sql)
+        return coviews.groupby("p")["q"].apply(list).to_dict()
+    except Exception as e:
+        print(f"Warning: could not fetch covisit_matrix: {e}")
+        return {}
 
 def build_training_dataframe() -> pd.DataFrame:
     """Explodes history_sessions and computes the 6 features."""
@@ -42,7 +61,7 @@ def build_training_dataframe() -> pd.DataFrame:
     """)
     
     catalog_dict: dict[str, dict[str, Any]] = get_catalog_and_stats()
-    covisit_matrix: dict[str, list[str]] = {} 
+    covisit_matrix: dict[str, list[str]] = get_covisit_matrix()
     rows: list[dict[str, Any]] = []
     
     for _, session in sessions.iterrows():
@@ -80,7 +99,7 @@ def build_training_dataframe() -> pd.DataFrame:
                 'subcat_affinity': subcat_affinity,
                 'price_drop_flag': 0.0, 
                 'organic_cvr': cand_meta.get('org_cvr', 0.0),
-                'velocity': cand_meta.get('org_cvr', 0.0) 
+                'velocity': cand_meta.get('velocity', 0.0) 
             })
             
     return pd.DataFrame(rows)
