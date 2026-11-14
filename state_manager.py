@@ -37,7 +37,7 @@ ORDER BY ts ASC"""
 SQL_HISTORY_BASELINE = """
 SELECT product_id::String AS product_id,
        countIf(event_type = 'purchase') AS purchases,
-       countIf(event_type = 'purchase') / greatest(countIf(event_type = 'view'), 1.0) AS organic_cvr,
+       countIf(event_type = 'purchase') / greatest(countIf(event_type = 'view'), 1) AS organic_cvr,
        count() / (60.0 * 24.0) AS events_per_hour_60d
 FROM shop.history_events
 GROUP BY product_id
