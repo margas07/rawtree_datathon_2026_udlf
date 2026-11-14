@@ -23,6 +23,13 @@ try:
 except ImportError:
     _ranker = None
 
+# origin/main legacy bandit module (kept optional so Person 3's src.bandit
+# hook is the primary path when present).
+try:
+    import bandit as _bandit  # type: ignore
+except ImportError:
+    _bandit = None
+
 # Blend weights: cold users follow cold-start candidates, warm users follow the
 # warm list and only receive new-product injections from cold start.
 COLD_WARM_WEIGHT = 0.25     # warm-list contribution when the user is cold
@@ -162,6 +169,7 @@ def recommend_live(req: Record, snap: dict[str, Any], cache: Any = None) -> list
     fallbacks = _fallback_sources(req, snap)
     active = snap["active_products"]
     try:
+        candidates: list[str] = list(fallbacks[0])
         recent_pids = _extract_recent_pids(req.get("recent_views"))
         new_prods = snap["new_products"]
         is_cold = bool(req.get("is_new_user")) or (
@@ -179,21 +187,34 @@ def recommend_live(req: Record, snap: dict[str, Any], cache: Any = None) -> list
                 except Exception:  # noqa: BLE001 -- cold start must never kill a request
                     cold_scores = {}
 
-        # Warm list: Person 2's ranker when present, else the category-trending
-        # fallback driven by the most recent view.
+        # Warm list: Person 2's ranker when present, else origin/main's
+        # covisit + category-trending fallback driven by the most recent view.
         warm_list: list[str] = []
         if _ranker is not None and hasattr(_ranker, "rank"):
-            ranked: Any = _ranker.rank(req, snap, candidates=cold_scores)
+            # Person 3 hook: cold-start dict scores are preferred candidates
+            # for the ranker; fall back to origin/main's candidate list.
+            ranked: Any = _ranker.rank(req, snap, candidates=cold_scores or candidates)
+        elif candidates is not None:
+            ranked = _sort_dict_scores(candidates) if isinstance(candidates, dict) else candidates
+        else:
+            ranked = ()
+            if recent_pids:
+                last_pid = recent_pids[-1]
+                cov_items = snap.get("covisited", {}).get(last_pid, [])
+                last_cat = snap.get("catalog", {}).get(last_pid, {}).get("category")
+                cat_items = snap.get("trending_by_category", {}).get(last_cat, ()) if last_cat else ()
+                ranked = [p for p in (*cov_items, *cat_items) if p != last_pid]
+
+        if isinstance(ranked, dict):
+            ranked = _sort_dict_scores(ranked)
+
+        # origin/main legacy bandit hook (module-level `bandit`), kept intact.
+        if _bandit is not None and hasattr(_bandit, "adjust"):
+            ranked = _bandit.adjust(req, list(ranked) if ranked is not None else [], snap)
             if isinstance(ranked, dict):
                 ranked = _sort_dict_scores(ranked)
-            warm_list = list(ranked or ())
-        elif recent_pids:
-            last_pid = recent_pids[-1]
-            last_cat = snap["catalog"].get(last_pid, {}).get("category")
-            if last_cat:
-                cat_items = snap["trending_by_category"].get(last_cat, ())
-                # Avoid putting the exact item currently being viewed in slot 1
-                warm_list = [p for p in cat_items if p != last_pid] if last_pid in cat_items else cat_items
+
+        warm_list = list(ranked or ())
 
         warm_scores = _rank_scores(warm_list, WARM_SLOT_DECAY)
 
