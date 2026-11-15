@@ -33,8 +33,78 @@ from request_io import (  # noqa: E402, F401
     query,
 )
 from state_manager import LiveCache  # noqa: E402
+from src.bandit import (  # noqa: E402
+    PRICE_CHANGES_SQL,
+    BanditState,
+    FeedbackIngestor,
+    update_price_drops,
+)
+from src.client import RawTreeClient  # noqa: E402
+from src.cold_start import build_catalog_features, fetch_segment_stats  # noqa: E402
 
-MODEL_VERSION = os.environ.get("MODEL_VERSION", "plutus-v1")
+MODEL_VERSION = os.environ.get("MODEL_VERSION", "v2-cold-bandit")
+
+COLD_FEATURES_REFRESH_S = float(os.environ.get("COLD_FEATURES_REFRESH_S", 300))
+
+
+class _BaselineFeedbackIngestor(FeedbackIngestor):
+    """FeedbackIngestor that also passes P1's cached baseline prices.
+
+    shop.catalog_updates has no old_price column, so when a price_change row
+    carries no usable ref_price we fall back to the ORIGINAL shop.catalog
+    price captured in LiveCache.baseline_prices at startup.
+    """
+
+    def __init__(self, client, state, baseline_prices, **kw) -> None:
+        super().__init__(client, state, **kw)
+        self.baseline_prices = baseline_prices
+
+    def run_once(self, *, force_prices: bool = False) -> int:
+        """Poll feedback once; price refresh uses the cached baseline prices."""
+        folded = self._poll_feedback()
+        now = time.monotonic()
+        if force_prices or (now - self._last_price_refresh
+                            >= self.price_refresh_seconds):
+            self._last_price_refresh = now
+            try:
+                update_price_drops(self.state,
+                                   self.client.query(PRICE_CHANGES_SQL),
+                                   baseline_prices=self.baseline_prices)
+            except Exception as exc:  # noqa: BLE001 -- keep the loop alive
+                self._record_error(exc)
+        return folded
+
+
+def _build_cold_features(cache: LiveCache, client: RawTreeClient) -> None:
+    """Build cold-start CatalogFeatures from the merged catalog (background)."""
+    catalog_rows = list(cache.catalog.values())
+    updates_rows = [{"product_id": pid, "change": "new_product"}
+                    for pid in cache.new_products]
+    try:
+        segment_rows = fetch_segment_stats(client)
+    except Exception as e:  # noqa: BLE001
+        print(f"[recommender] segment stats skipped: {e}")
+        segment_rows = None
+    cache.cold_features = build_catalog_features(catalog_rows, updates_rows,
+                                                 segment_rows)
+    print(f"[recommender] cold_features built ({len(catalog_rows)} products, "
+          f"{len(cache.new_products)} new)")
+
+
+def _cold_feature_loop(cache: LiveCache, client: RawTreeClient) -> None:
+    import threading
+    import time as _time
+
+    def loop() -> None:
+        while True:
+            try:
+                _build_cold_features(cache, client)
+            except Exception as e:  # noqa: BLE001
+                print(f"[recommender] cold_features error: {e}")
+            _time.sleep(COLD_FEATURES_REFRESH_S)
+
+    threading.Thread(target=loop, name="cold-features-builder",
+                     daemon=True).start()
 
 
 def _latency_ms(ts_str: str, now_utc: float) -> float | None:
@@ -60,6 +130,21 @@ def main() -> None:
             time.sleep(2)
     print(f"[recommender] LiveCache ready: {len(cache.get_active())} active products")
 
+    # ---- Person 3 wiring: bandit state + background feedback ingestor ------ #
+    try:
+        client = RawTreeClient()
+    except Exception as e:  # noqa: BLE001 -- run without online adaptation
+        print(f"[recommender] RawTreeClient unavailable ({e}); bandit disabled")
+        client = None
+    if client is not None:
+        cache.bandit_state = BanditState()
+        _BaselineFeedbackIngestor(
+            client, cache.bandit_state, cache.baseline_prices,
+        ).start()  # daemon: polls team feedback + refreshes price drops
+        _cold_feature_loop(cache, client)  # daemon: builds cold_features
+        print("[recommender] bandit state + feedback ingestor + cold-feature "
+              "builder started")
+
     seen = SeenWindow(maxlen=5000)
     last_ts = ""
     latencies: deque[float] = deque(maxlen=500)
@@ -74,7 +159,7 @@ def main() -> None:
                 answers = [
                     {
                         "request_id": req["request_id"],
-                        "items": recommend_live(req, snap),
+                        "items": recommend_live(req, snap, cache),
                         "model_version": MODEL_VERSION,
                     }
                     for req in reqs
