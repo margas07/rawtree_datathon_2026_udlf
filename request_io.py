@@ -20,8 +20,8 @@ http.mount("http://", _adapter)
 
 Record = dict[str, Any]
 
-# Connect timeout 0.5s, read timeout 1.2s so a stalled socket never eats the 3s budget
-FAST_TIMEOUT: tuple[float, float] = (0.5, 1.2)
+# Connect timeout 1.0s, read timeout 1.5s so a stalled socket never eats the 3s budget
+FAST_TIMEOUT: tuple[float, float] = (1.0, 1.5)
 
 SALES = """
 SELECT product_id, count() AS n

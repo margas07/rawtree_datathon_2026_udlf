@@ -42,7 +42,7 @@ from src.bandit import (  # noqa: E402
 from src.client import RawTreeClient  # noqa: E402
 from src.cold_start import build_catalog_features, fetch_segment_stats  # noqa: E402
 
-MODEL_VERSION = os.environ.get("MODEL_VERSION", "v2-cold-bandit")
+MODEL_VERSION = os.environ.get("MODEL_VERSION", "plutus-v2")
 
 COLD_FEATURES_REFRESH_S = float(os.environ.get("COLD_FEATURES_REFRESH_S", 300))
 
@@ -130,20 +130,21 @@ def main() -> None:
             time.sleep(2)
     print(f"[recommender] LiveCache ready: {len(cache.get_active())} active products")
 
-    # ---- Person 3 wiring: bandit state + background feedback ingestor ------ #
-    try:
-        client = RawTreeClient()
-    except Exception as e:  # noqa: BLE001 -- run without online adaptation
-        print(f"[recommender] RawTreeClient unavailable ({e}); bandit disabled")
-        client = None
-    if client is not None:
-        cache.bandit_state = BanditState()
-        _BaselineFeedbackIngestor(
-            client, cache.bandit_state, cache.baseline_prices,
-        ).start()  # daemon: polls team feedback + refreshes price drops
-        _cold_feature_loop(cache, client)  # daemon: builds cold_features
-        print("[recommender] bandit state + feedback ingestor + cold-feature "
-              "builder started")
+    # ---- Optional background threads (disabled by default to maintain <100ms p95 latency) ---- #
+    enable_bandit = os.environ.get("ENABLE_BANDIT", "0") == "1"
+    if enable_bandit:
+        try:
+            client = RawTreeClient()
+        except Exception as e:  # noqa: BLE001
+            print(f"[recommender] RawTreeClient unavailable ({e}); bandit disabled")
+            client = None
+        if client is not None:
+            cache.bandit_state = BanditState()
+            _BaselineFeedbackIngestor(
+                client, cache.bandit_state, cache.baseline_prices,
+            ).start()
+            _cold_feature_loop(cache, client)
+            print("[recommender] bandit state + feedback ingestor + cold-feature builder started")
 
     seen = SeenWindow(maxlen=5000)
     last_ts = ""
@@ -152,6 +153,7 @@ def main() -> None:
 
     while True:
         loop_t0 = time.monotonic()
+        reqs = []
         try:
             reqs, last_ts = pull(seen, last_ts)
             if reqs:

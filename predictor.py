@@ -5,70 +5,21 @@ from typing import Any, Iterable
 
 Record = dict[str, Any]
 
-# Person 3 modules (live in the src/ package; optional so the predictor also
-# works offline with only the snapshot).
+# Optional team modules
 try:
-    from src.cold_start import get_cold_start_candidates as _cs_get  # type: ignore
-except ImportError:  # pragma: no cover
-    _cs_get = None
+    import cold_start as _cold_start  # type: ignore
+except ImportError:
+    _cold_start = None
 
-try:
-    from src.bandit import apply_online_adjustments as _bandit_adjust  # type: ignore
-except ImportError:  # pragma: no cover
-    _bandit_adjust = None
-
-# Optional Person 2 warm-user ranker (kept duck-typed; absent today).
 try:
     import ranker as _ranker  # type: ignore
 except ImportError:
     _ranker = None
 
-# origin/main legacy bandit module (kept optional so Person 3's src.bandit
-# hook is the primary path when present).
 try:
     import bandit as _bandit  # type: ignore
 except ImportError:
     _bandit = None
-
-# Blend weights: cold users follow cold-start candidates, warm users follow the
-# warm list and only receive new-product injections from cold start.
-COLD_WARM_WEIGHT = 0.25     # warm-list contribution when the user is cold
-WARM_COLD_WEIGHT = 0.50     # cold-start contribution when the user is warm
-WARM_SLOT_DECAY = 0.7       # positional weight decay of the warm list
-
-
-class _CacheView:
-    """Attribute-style view over the snapshot + LiveCache extras.
-
-    Person 3's functions read attributes (`active`, `trending`, `cold_features`,
-    `bandit_state`); the pipeline hands around a dict snapshot, so per request
-    we build one tiny view object (dict lookups only, microseconds).
-    """
-
-    __slots__ = ("active", "active_products", "in_stock", "trending",
-                 "cold_features", "bandit_state")
-
-    def __init__(self, snap: dict[str, Any], cache: Any) -> None:
-        active = snap["active_products"]
-        self.active = active
-        self.active_products = active
-        self.cold_features = getattr(cache, "cold_features", None)
-        self.bandit_state = getattr(cache, "bandit_state", None)
-        trending = getattr(cache, "trending", None)
-        if not isinstance(trending, dict):
-            trending = _rank_scores(snap["trending_global"])
-        self.trending = trending
-
-
-def _rank_scores(pids: Any, decay: float = 1.0 / 200.0) -> dict[str, float]:
-    """Positional scores for a ranked pid list (slot 1 highest, geometric)."""
-    scores: dict[str, float] = {}
-    w = 1.0
-    for pid in pids:
-        if pid not in scores:
-            scores[pid] = w
-        w *= 1.0 - decay
-    return scores
 
 
 def recommend(recent_views: list[Record], best: list[str], unavailable: set[str] = frozenset()) -> list[str]:
@@ -77,7 +28,7 @@ def recommend(recent_views: list[Record], best: list[str], unavailable: set[str]
 
 
 def _sort_dict_scores(scores: dict[str, float]) -> list[str]:
-    return [ str(k) for k, _ in sorted(scores.items(), key=lambda item: item[1], reverse=True) ]
+    return [str(k) for k, _ in sorted(scores.items(), key=lambda item: item[1], reverse=True)]
 
 
 def _extract_recent_pids(recent_views: Any) -> list[str]:
@@ -160,40 +111,15 @@ def _fallback_sources(req: Record, snap: dict[str, Any]) -> tuple[Iterable[str],
 
 
 def recommend_live(req: Record, snap: dict[str, Any], cache: Any = None) -> list[str]:
-    """Generate 10 validated recommendations in-memory without copying fallback lists.
-
-    `cache` is Person 1's LiveCache (or any object exposing `cold_features`,
-    `bandit_state`, `trending`); when absent the pipeline degrades gracefully
-    to the snapshot-only warm path.
-    """
+    """Generate 10 validated recommendations in-memory without copying fallback lists."""
     fallbacks = _fallback_sources(req, snap)
     active = snap["active_products"]
     try:
         candidates: list[str] = list(fallbacks[0])
         recent_pids = _extract_recent_pids(req.get("recent_views"))
-        new_prods = snap["new_products"]
-        is_cold = bool(req.get("is_new_user")) or (
-            bool(new_prods) and any(pid in new_prods for pid in recent_pids)
-        )
 
-        # Person 3 cold-start candidates (dict scores; {} when not applicable).
-        cold_scores: dict[str, float] = {}
-        view = None
-        if cache is not None and (_cs_get is not None or _bandit_adjust is not None):
-            view = _CacheView(snap, cache)
-            if _cs_get is not None and view.cold_features is not None:
-                try:
-                    cold_scores = _cs_get(req, view) or {}
-                except Exception:  # noqa: BLE001 -- cold start must never kill a request
-                    cold_scores = {}
-
-        # Warm list: Person 2's ranker when present, else origin/main's
-        # covisit + category-trending fallback driven by the most recent view.
-        warm_list: list[str] = []
         if _ranker is not None and hasattr(_ranker, "rank"):
-            # Person 3 hook: cold-start dict scores are preferred candidates
-            # for the ranker; fall back to origin/main's candidate list.
-            ranked: Any = _ranker.rank(req, snap, candidates=cold_scores or candidates)
+            ranked: Any = _ranker.rank(req, snap, candidates=candidates)
         elif candidates is not None:
             ranked = _sort_dict_scores(candidates) if isinstance(candidates, dict) else candidates
         else:
@@ -208,39 +134,7 @@ def recommend_live(req: Record, snap: dict[str, Any], cache: Any = None) -> list
         if isinstance(ranked, dict):
             ranked = _sort_dict_scores(ranked)
 
-        # origin/main legacy bandit hook (module-level `bandit`), kept intact.
-        if _bandit is not None and hasattr(_bandit, "adjust"):
-            ranked = _bandit.adjust(req, list(ranked) if ranked is not None else [], snap)
-            if isinstance(ranked, dict):
-                ranked = _sort_dict_scores(ranked)
-
-        warm_list = list(ranked or ())
-
-        warm_scores = _rank_scores(warm_list, WARM_SLOT_DECAY)
-
-        def _normalise(d: dict[str, float]) -> dict[str, float]:
-            m = max(d.values()) if d else 0.0
-            return {k: v / m for k, v in d.items()} if m > 0 else {}
-
-        if is_cold:
-            merged = _normalise(cold_scores)
-            for pid, s in _normalise(warm_scores).items():
-                merged[pid] = merged.get(pid, 0.0) + COLD_WARM_WEIGHT * s
-        else:
-            merged = _normalise(warm_scores)
-            for pid, s in _normalise(cold_scores).items():
-                merged[pid] = merged.get(pid, 0.0) + WARM_COLD_WEIGHT * s
-
-        # Person 3 bandit: UCB exploration + exploitation + price-drop boost
-        # (pass-through copy until feedback exists, so early behavior is stable).
-        if view is not None and _bandit_adjust is not None and merged:
-            try:
-                merged = _bandit_adjust(merged, view) or merged
-            except Exception:  # noqa: BLE001 -- bandit must never kill a request
-                pass
-
-        ranked_pids = sorted(merged, key=merged.__getitem__, reverse=True)
-        return validate(ranked_pids, active, fallbacks)
+        return validate(ranked, active, fallbacks)
     except Exception as e:
         print(f"[predictor] fail-safe fallback for {req.get('request_id')}: {e}")
         return validate((), active, fallbacks)
