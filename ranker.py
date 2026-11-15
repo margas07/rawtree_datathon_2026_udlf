@@ -472,6 +472,182 @@ def rank_proteus(
     return cold_results[:10]
 
 
+def rank_proteus_v2(
+    request_row: dict[str, Any],
+    covisit_matrix: dict[str, list[str]],
+    live_catalog_cache: dict[str, dict[str, Any]],
+    baseline_fallback: list[str] | dict[str, float],
+    active_products: frozenset[str] | set[str] | None = None,
+    snap: dict[str, Any] | None = None,
+) -> list[str]:
+    """Proteus v2 Dynamic Champions Ranker with Step D (Recent View Deduplication).
+
+    In addition to filtering products the user already owns (owned_pids),
+    it deduplicates products the user has recently viewed (viewed_pids),
+    freeing up high-value recommendation slots for novel alternatives and
+    complementary accessories.
+    """
+    user_id = str(request_row.get("user_id", ""))
+    user_purchases = snap.get("user_purchases", {}) if snap else {}
+    owned_pids: set[str] = user_purchases.get(user_id, set())
+
+    recent_views: list[Any] = request_row.get("recent_views", [])
+    recent_pids: list[str] = [
+        str(v.get("product_id")) if isinstance(v, dict) else str(v)
+        for v in recent_views
+        if v
+    ]
+    viewed_pids: set[str] = set(recent_pids)
+    excluded_pids: set[str] = owned_pids | viewed_pids
+
+    is_active = (
+        (lambda pid: pid in active_products)
+        if active_products is not None
+        else (
+            lambda pid: live_catalog_cache.get(pid, {}).get("is_active", False)
+            and live_catalog_cache.get(pid, {}).get("in_stock", True)
+        )
+    )
+
+    fallback_list: list[str] = (
+        list(baseline_fallback.keys())
+        if isinstance(baseline_fallback, dict)
+        else (baseline_fallback or [])
+    )
+
+    # -------------------------------------------------------------
+    # CASE 1: Warm Session (Shopper has recent views -> High Intent)
+    # -------------------------------------------------------------
+    if recent_pids:
+        # Dominant category resolution with tie-breaking on latest view
+        cat_counts: dict[str, int] = {}
+        for pid in recent_pids:
+            c = live_catalog_cache.get(pid, {}).get("category")
+            if c and c in CATEGORY_CHAMPIONS:
+                cat_counts[c] = cat_counts.get(c, 0) + 1
+
+        target_cat: str | None = None
+        if cat_counts:
+            last_cat = live_catalog_cache.get(recent_pids[-1], {}).get("category")
+            max_count = max(cat_counts.values())
+            target_cat = last_cat if cat_counts.get(last_cat) == max_count else max(cat_counts, key=cat_counts.get)
+
+        if target_cat:
+            results: list[str] = []
+            seen: set[str] = set()
+
+            live_trending = snap.get("trending_by_category", {}).get(target_cat, []) if snap else []
+            static_champs = CATEGORY_CHAMPIONS.get(target_cat, [])
+
+            # Dynamic Merged Pool
+            merged_pool: list[str] = []
+            for p in static_champs[:2]:
+                if p not in merged_pool:
+                    merged_pool.append(p)
+            for p in live_trending:
+                if p not in merged_pool:
+                    merged_pool.append(p)
+            for p in static_champs[2:]:
+                if p not in merged_pool:
+                    merged_pool.append(p)
+
+            # Step D Primary Pass: Active, Unowned, AND Unviewed!
+            for cand in merged_pool:
+                if cand not in seen and is_active(cand) and cand not in excluded_pids:
+                    results.append(cand)
+                    seen.add(cand)
+                    if len(results) == 10:
+                        return results
+
+            # Fallbacks: still preferring unowned and unviewed
+            for cand in GLOBAL_BESTSELLERS:
+                if cand not in seen and is_active(cand) and cand not in excluded_pids:
+                    results.append(cand)
+                    seen.add(cand)
+                    if len(results) == 10:
+                        return results
+
+            for cand in fallback_list:
+                if cand not in seen and is_active(cand) and cand not in excluded_pids:
+                    results.append(cand)
+                    seen.add(cand)
+                    if len(results) == 10:
+                        return results
+
+            # Relaxation Pass 1: If catalog is small, allow unowned items (relax viewed_pids)
+            if len(results) < 10:
+                for cand in merged_pool:
+                    if cand not in seen and is_active(cand) and cand not in owned_pids:
+                        results.append(cand)
+                        seen.add(cand)
+                        if len(results) == 10:
+                            return results
+
+            # Relaxation Pass 2: Strict safety guarantee of exactly 10 active items
+            if len(results) < 10:
+                for cand in merged_pool:
+                    if cand not in seen and is_active(cand):
+                        results.append(cand)
+                        seen.add(cand)
+                        if len(results) == 10:
+                            return results
+
+            if len(results) < 10:
+                for cand in GLOBAL_BESTSELLERS:
+                    if cand not in seen and is_active(cand):
+                        results.append(cand)
+                        seen.add(cand)
+                        if len(results) == 10:
+                            return results
+
+            return results
+
+    # -------------------------------------------------------------
+    # CASE 2: Cold Start / New User (recent_views is empty)
+    # -------------------------------------------------------------
+    cold_results: list[str] = []
+    cold_seen: set[str] = set()
+
+    # Priority 1: Top active cold-purchase champions (unowned)
+    for cand in COLD_PURCHASE_CHAMPIONS:
+        if cand not in cold_seen and is_active(cand) and cand not in owned_pids:
+            cold_results.append(cand)
+            cold_seen.add(cand)
+            if len(cold_results) == 10:
+                return cold_results
+
+    # Priority 2: 1 live dynamic champion per distinct category
+    for cat in COLD_CATEGORIES:
+        live_cat = snap.get("trending_by_category", {}).get(cat, []) if snap else []
+        static_champs = CATEGORY_CHAMPIONS.get(cat, [])
+        for cand in live_cat + static_champs:
+            if cand not in cold_seen and is_active(cand) and cand not in owned_pids:
+                cold_results.append(cand)
+                cold_seen.add(cand)
+                if len(cold_results) == 10:
+                    return cold_results
+                break
+
+    # Priority 3: Global bestsellers
+    if len(cold_results) < 10:
+        for cand in GLOBAL_BESTSELLERS:
+            if cand not in cold_seen and is_active(cand):
+                cold_results.append(cand)
+                cold_seen.add(cand)
+                if len(cold_results) == 10:
+                    break
+
+    if len(cold_results) < 10:
+        for cand in fallback_list:
+            if cand not in cold_seen and is_active(cand):
+                cold_results.append(cand)
+                cold_seen.add(cand)
+                if len(cold_results) == 10:
+                    break
+
+    return cold_results[:10]
+
+
 def rank(req: dict[str, Any], snap: dict[str, Any], candidates: list[str]) -> list[str]:
     """Standard entrypoint called by predictor.py."""
     import os
@@ -481,7 +657,16 @@ def rank(req: dict[str, Any], snap: dict[str, Any], candidates: list[str]) -> li
     baseline_fallback = candidates or []
 
     model_version = os.environ.get("MODEL_VERSION", "")
-    if model_version.startswith("proteus"):
+    if model_version == "proteus-v2":
+        return rank_proteus_v2(
+            request_row,
+            covisit_matrix,
+            live_catalog_cache,
+            baseline_fallback,
+            active_products=snap.get("active_products"),
+            snap=snap,
+        )
+    elif model_version.startswith("proteus"):
         return rank_proteus(
             request_row,
             covisit_matrix,
