@@ -1,4 +1,4 @@
-# 🌲 RawTree Challenge · Real-Time Recommendation Engine
+# RawTree Challenge · Real-Time Recommendation Engine
 ### **Team 12 · Datathon FME 2026 (UPC Barcelona)**
 
 [![Python 3.13](https://img.shields.io/badge/Python-3.13-blue.svg)](https://www.python.org/)
@@ -11,7 +11,7 @@
 
 ---
 
-## 📑 Table of Contents
+## Table of Contents
 1. [Executive Summary & The Pitch](#-executive-summary--the-pitch)
 2. [Why We Rejected Traditional Machine Learning (XGBoost)](#-why-we-rejected-traditional-machine-learning-xgboost)
 3. [Empirical Foundations: The Three Laws of RawTree Shoppers](#-empirical-foundations-the-three-laws-of-rawtree-shoppers)
@@ -25,7 +25,7 @@
 
 ---
 
-## 💡 Executive Summary & The Pitch
+## Executive Summary & The Pitch
 
 When an online shopper arrives at a product carousel, an automated recommender has **3 seconds** to select an ordered list of **10 active products**. Late responses, duplicate products, or out-of-stock items trigger automatic fallback penalties.
 
@@ -56,7 +56,7 @@ Rather than treating recommendation as an uncalibrated black-box classification 
 
 ---
 
-## ⚡ Why We Rejected Traditional Machine Learning (XGBoost)
+## Why We Rejected Traditional Machine Learning (XGBoost)
 
 Most participants default to training an offline **XGBoost or LightGBM pointwise ranker**. In real-time streaming, however, traditional GBDT models fail due to structural flaws:
 
@@ -73,7 +73,7 @@ Most participants default to training an offline **XGBoost or LightGBM pointwise
 
 ---
 
-## 🔬 Empirical Foundations: The Three Laws of RawTree Shoppers
+## Empirical Foundations: The Three Laws of RawTree Shoppers
 
 Before writing a single heuristic, we analyzed the 60-day historical logs (`shop.history_sessions` and `shop.history_events`):
 
@@ -91,7 +91,7 @@ Before writing a single heuristic, we analyzed the 60-day historical logs (`shop
 
 ---
 
-## 🏆 The Final Deployed Models
+## The Final Deployed Models
 
 We deployed two concurrent models running in parallel, giving the jury two distinct strategic architectures to evaluate:
 
@@ -124,7 +124,7 @@ We deployed two concurrent models running in parallel, giving the jury two disti
 
 ---
 
-## 🏗 System Architecture & RawTree Integration
+## System Architecture & RawTree Integration
 
 The pipeline is organized into three decoupled layers:
 
@@ -179,7 +179,7 @@ flowchart LR
 
 ---
 
-## 📈 The Engineering Evolution: Iteration Benchmarks
+## The Engineering Evolution: Iteration Benchmarks
 
 Every decision was validated against live production feedback:
 
@@ -207,7 +207,7 @@ timeline
 
 ---
 
-## 📂 Repository Structure & Navigation
+## Repository Structure & Navigation
 
 ```text
 rawtree_datathon_2026_udlf/
@@ -227,7 +227,7 @@ rawtree_datathon_2026_udlf/
 
 ---
 
-## 🚀 Quick Start & Live Monitoring
+## Quick Start & Live Monitoring
 
 ### Running the Flagship Recommender Daemon
 To start `proteus-v3.1` with live ClickHouse synchronization:
@@ -253,10 +253,10 @@ python monitor.py
 
 ---
 
-## 🎓 Conclusion for the Jury
+## Conclusion for the Jury
 
-Team 12's solution is built on a simple philosophy: **respect e-commerce reality**. Rather than guessing user intent with complex, uncalibrated offline models, we built a real-time system that reacts to customer purchase history, prevents carousel redundancy, and enforces the natural cross-subcategory diversity shoppers crave.
+Our solution is built on a simple philosophy: **respect e-commerce reality**. Rather than guessing user intent with complex, uncalibrated offline models, we built a real-time system that reacts to customer purchase history, prevents carousel redundancy, and enforces the natural cross-subcategory diversity shoppers crave.
 
-By pairing ultra-fast **$<30\ \mu\text{s}$ inference** with continuous **1.5s catalog synchronization**, our dual models (`proteus-v3.1` and `plutus-v1-dedup`) achieved the competition's highest sustained conversion rates with **$100\%$ on-time reliability**.
+By pairing ultra-fast **$<30\ \mu\text{s}$ inference** with continuous **1.5s catalog synchronization**, our dual models (`proteus-v3.1` and `plutus-v1-dedup`) achieved above average sustained conversion rates with **$100\%$ on-time reliability**.
 
 *Datathon FME 2026 · Team 12*
