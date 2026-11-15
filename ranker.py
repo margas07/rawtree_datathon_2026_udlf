@@ -931,6 +931,237 @@ def rank_proteus_v3(
     return cold_results[:10]
 
 
+def rank_proteus_v3_1(
+    request_row: dict[str, Any],
+    covisit_matrix: dict[str, list[str]],
+    live_catalog_cache: dict[str, dict[str, Any]],
+    baseline_fallback: list[str] | dict[str, float],
+    active_products: frozenset[str] | set[str] | None = None,
+    snap: dict[str, Any] | None = None,
+) -> list[str]:
+    """Proteus v3.1 Cross-Subcategory Diversity & Purchase State Ranker.
+
+    Core Behavioral Rules:
+    1. Satisfied Subcategories (84.1% Rule):
+       If a shopper already purchased in a subcategory (e.g., they bought a toaster or jeans),
+       they rarely want another item in that same subcategory. We suppress that subcategory from
+       top slots and elevate the *other* complementary subcategories in that category.
+    2. Active Search Subcategories:
+       If a shopper has been viewing a subcategory but has NOT purchased it yet, they are still
+       actively in the market. We anchor Slot 1 with the top unviewed, unowned champion of that
+       subcategory.
+    3. The Dishwasher + Microwave Diversity Rule:
+       Slots 1-4 each feature distinct subcategories across the category to provide maximum
+       breadth and avoid clumping (e.g. 1 toaster, 1 cookware, 1 knives, 1 coffee machine).
+    4. Step D Deduplication & Safe Relaxation Passes:
+       Deduplicates owned & recently viewed items; guarantees strictly 10 active items.
+    """
+    user_id = str(request_row.get("user_id", ""))
+    user_purchases = snap.get("user_purchases", {}) if snap else {}
+    owned_pids: set[str] = user_purchases.get(user_id, set())
+    purchased_subcats: set[str] = {
+        live_catalog_cache.get(p, {}).get("subcategory", "")
+        for p in owned_pids
+        if live_catalog_cache.get(p, {}).get("subcategory")
+    }
+
+    recent_views: list[Any] = request_row.get("recent_views", [])
+    recent_pids: list[str] = [
+        str(v.get("product_id")) if isinstance(v, dict) else str(v)
+        for v in recent_views
+        if v
+    ]
+    viewed_pids: set[str] = set(recent_pids)
+    excluded_pids: set[str] = owned_pids | viewed_pids
+
+    is_active = (
+        (lambda pid: pid in active_products)
+        if active_products is not None
+        else (
+            lambda pid: live_catalog_cache.get(pid, {}).get("is_active", False)
+            and live_catalog_cache.get(pid, {}).get("in_stock", True)
+        )
+    )
+
+    fallback_list: list[str] = (
+        list(baseline_fallback.keys())
+        if isinstance(baseline_fallback, dict)
+        else (baseline_fallback or [])
+    )
+
+    # -------------------------------------------------------------
+    # CASE 1: Warm Session (Shopper has recent views -> High Intent)
+    # -------------------------------------------------------------
+    if recent_pids:
+        # Dominant category resolution with tie-breaking on latest view
+        cat_counts: dict[str, int] = {}
+        for pid in recent_pids:
+            c = live_catalog_cache.get(pid, {}).get("category")
+            if c and c in CATEGORY_CHAMPIONS:
+                cat_counts[c] = cat_counts.get(c, 0) + 1
+
+        target_cat: str | None = None
+        if cat_counts:
+            last_cat = live_catalog_cache.get(recent_pids[-1], {}).get("category")
+            max_count = max(cat_counts.values())
+            target_cat = last_cat if cat_counts.get(last_cat) == max_count else max(cat_counts, key=cat_counts.get)
+
+        if target_cat:
+            results: list[str] = []
+            seen: set[str] = set()
+            subcat_counts: dict[str, int] = {}
+
+            last_pid = recent_pids[-1]
+            last_subcat = live_catalog_cache.get(last_pid, {}).get("subcategory")
+
+            # RULE 1: If user was viewing a subcategory they have NOT purchased yet,
+            # anchor Slot 1 with that subcategory's top unviewed champion
+            if last_subcat and (last_subcat not in purchased_subcats) and (last_subcat in SUBCATEGORY_CHAMPIONS):
+                for cand in SUBCATEGORY_CHAMPIONS[last_subcat]:
+                    if cand not in seen and is_active(cand) and cand not in excluded_pids:
+                        results.append(cand)
+                        seen.add(cand)
+                        subcat_counts[last_subcat] = 1
+                        break
+
+            # Build candidate pool for target category
+            live_trending = snap.get("trending_by_category", {}).get(target_cat, []) if snap else []
+            static_champs = CATEGORY_CHAMPIONS.get(target_cat, [])
+
+            merged_pool: list[str] = []
+            for p in static_champs[:2]:
+                if p not in merged_pool:
+                    merged_pool.append(p)
+            for p in live_trending:
+                if p not in merged_pool:
+                    merged_pool.append(p)
+            for p in static_champs[2:]:
+                if p not in merged_pool:
+                    merged_pool.append(p)
+
+            # RULE 2: Diverse Subcategories (Max 1 per subcategory, skipping already purchased subcategories)
+            for cand in merged_pool:
+                if cand not in seen and is_active(cand) and cand not in excluded_pids:
+                    cand_subcat = live_catalog_cache.get(cand, {}).get("subcategory", "")
+                    if cand_subcat in purchased_subcats:
+                        continue  # Skip subcategories the shopper already bought!
+                    if subcat_counts.get(cand_subcat, 0) < 1:
+                        results.append(cand)
+                        seen.add(cand)
+                        subcat_counts[cand_subcat] = subcat_counts.get(cand_subcat, 0) + 1
+                        if len(results) == 10:
+                            return results
+
+            # RULE 3: Allow additional items from unpurchased subcategories (up to 2 per subcategory)
+            for cand in merged_pool:
+                if cand not in seen and is_active(cand) and cand not in excluded_pids:
+                    cand_subcat = live_catalog_cache.get(cand, {}).get("subcategory", "")
+                    if cand_subcat in purchased_subcats:
+                        continue
+                    if subcat_counts.get(cand_subcat, 0) < 2:
+                        results.append(cand)
+                        seen.add(cand)
+                        subcat_counts[cand_subcat] = subcat_counts.get(cand_subcat, 0) + 1
+                        if len(results) == 10:
+                            return results
+
+            # RULE 4: Fill remaining slots with remaining merged_pool items (relax subcategory rules)
+            for cand in merged_pool:
+                if cand not in seen and is_active(cand) and cand not in excluded_pids:
+                    results.append(cand)
+                    seen.add(cand)
+                    if len(results) == 10:
+                        return results
+
+            # Fallbacks: still preferring unowned and unviewed
+            for cand in GLOBAL_BESTSELLERS:
+                if cand not in seen and is_active(cand) and cand not in excluded_pids:
+                    results.append(cand)
+                    seen.add(cand)
+                    if len(results) == 10:
+                        return results
+
+            for cand in fallback_list:
+                if cand not in seen and is_active(cand) and cand not in excluded_pids:
+                    results.append(cand)
+                    seen.add(cand)
+                    if len(results) == 10:
+                        return results
+
+            # Relaxation Pass 1: allow unowned items (relax viewed_pids)
+            if len(results) < 10:
+                for cand in merged_pool:
+                    if cand not in seen and is_active(cand) and cand not in owned_pids:
+                        results.append(cand)
+                        seen.add(cand)
+                        if len(results) == 10:
+                            return results
+
+            # Relaxation Pass 2: Strict safety guarantee of exactly 10 active items
+            if len(results) < 10:
+                for cand in merged_pool:
+                    if cand not in seen and is_active(cand):
+                        results.append(cand)
+                        seen.add(cand)
+                        if len(results) == 10:
+                            return results
+
+            if len(results) < 10:
+                for cand in GLOBAL_BESTSELLERS:
+                    if cand not in seen and is_active(cand):
+                        results.append(cand)
+                        seen.add(cand)
+                        if len(results) == 10:
+                            return results
+
+            return results
+
+    # -------------------------------------------------------------
+    # CASE 2: Cold Start / New User (recent_views is empty)
+    # -------------------------------------------------------------
+    cold_results: list[str] = []
+    cold_seen: set[str] = set()
+
+    # Priority 1: Top active cold-purchase champions (unowned)
+    for cand in COLD_PURCHASE_CHAMPIONS:
+        if cand not in cold_seen and is_active(cand) and cand not in owned_pids:
+            cold_results.append(cand)
+            cold_seen.add(cand)
+            if len(cold_results) == 10:
+                return cold_results
+
+    # Priority 2: 1 live dynamic champion per distinct category
+    for cat in COLD_CATEGORIES:
+        live_cat = snap.get("trending_by_category", {}).get(cat, []) if snap else []
+        static_champs = CATEGORY_CHAMPIONS.get(cat, [])
+        for cand in live_cat + static_champs:
+            if cand not in cold_seen and is_active(cand) and cand not in owned_pids:
+                cold_results.append(cand)
+                cold_seen.add(cand)
+                if len(cold_results) == 10:
+                    return cold_results
+                break
+
+    # Priority 3: Global bestsellers
+    if len(cold_results) < 10:
+        for cand in GLOBAL_BESTSELLERS:
+            if cand not in cold_seen and is_active(cand):
+                cold_results.append(cand)
+                cold_seen.add(cand)
+                if len(cold_results) == 10:
+                    break
+
+    if len(cold_results) < 10:
+        for cand in fallback_list:
+            if cand not in cold_seen and is_active(cand):
+                cold_results.append(cand)
+                cold_seen.add(cand)
+                if len(cold_results) == 10:
+                    break
+
+    return cold_results[:10]
+
+
 def rank(req: dict[str, Any], snap: dict[str, Any], candidates: list[str]) -> list[str]:
     """Standard entrypoint called by predictor.py."""
     import os
@@ -940,7 +1171,16 @@ def rank(req: dict[str, Any], snap: dict[str, Any], candidates: list[str]) -> li
     baseline_fallback = candidates or []
 
     model_version = os.environ.get("MODEL_VERSION", "")
-    if model_version == "proteus-v3":
+    if model_version in ("proteus-v3.1", "proteus-v3-1"):
+        return rank_proteus_v3_1(
+            request_row,
+            covisit_matrix,
+            live_catalog_cache,
+            baseline_fallback,
+            active_products=snap.get("active_products"),
+            snap=snap,
+        )
+    elif model_version == "proteus-v3":
         return rank_proteus_v3(
             request_row,
             covisit_matrix,
