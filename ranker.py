@@ -188,6 +188,10 @@ def rank_candidates(
         )
     )
 
+    user_id = str(request_row.get("user_id", ""))
+    user_purchases = snap.get("user_purchases", {}) if snap else {}
+    owned_pids: set[str] = user_purchases.get(user_id, set())
+
     # -------------------------------------------------------------
     # CASE 1: Warm Session (Shopper has recent views -> High Intent)
     # -------------------------------------------------------------
@@ -204,19 +208,19 @@ def rank_candidates(
             results: list[str] = []
             seen: set[str] = set()
 
-            # Priority 1: Top Category Champions (97.7% of purchases fall here!)
+            # Priority 1: Top Category Champions (skipping items customer already owns)
             for cand in CATEGORY_CHAMPIONS[target_cat]:
-                if cand not in seen and is_active(cand):
+                if cand not in seen and is_active(cand) and cand not in owned_pids:
                     results.append(cand)
                     seen.add(cand)
                     if len(results) == 10:
                         return results
 
-            # Priority 2: Live trending items in this category (if any champion was out of stock)
+            # Priority 2: Live trending items in this category not owned
             if snap is not None:
                 live_trending = snap.get("trending_by_category", {}).get(target_cat, [])
                 for cand in live_trending:
-                    if cand not in seen and is_active(cand):
+                    if cand not in seen and is_active(cand) and cand not in owned_pids:
                         results.append(cand)
                         seen.add(cand)
                         if len(results) == 10:
@@ -224,30 +228,47 @@ def rank_candidates(
 
             # Priority 3: Fallback padding if needed
             for cand in GLOBAL_BESTSELLERS:
-                if cand not in seen and is_active(cand):
+                if cand not in seen and is_active(cand) and cand not in owned_pids:
                     results.append(cand)
                     seen.add(cand)
                     if len(results) == 10:
                         return results
 
             for cand in fallback_list:
-                if cand not in seen and is_active(cand):
+                if cand not in seen and is_active(cand) and cand not in owned_pids:
                     results.append(cand)
                     seen.add(cand)
                     if len(results) == 10:
                         return results
+
+            # Safety fallback: if user owns many items, allow owned items to guarantee 10
+            if len(results) < 10:
+                for cand in CATEGORY_CHAMPIONS[target_cat]:
+                    if cand not in seen and is_active(cand):
+                        results.append(cand)
+                        seen.add(cand)
+                        if len(results) == 10:
+                            return results
+
+            if len(results) < 10:
+                for cand in GLOBAL_BESTSELLERS:
+                    if cand not in seen and is_active(cand):
+                        results.append(cand)
+                        seen.add(cand)
+                        if len(results) == 10:
+                            return results
 
             return results
 
     # -------------------------------------------------------------
     # CASE 2: Cold Start / New User (recent_views is empty)
     # -------------------------------------------------------------
-    # Deliver the top active cold-purchase champions
+    # Deliver the top active cold-purchase champions (skipping owned items)
     cold_results: list[str] = []
     cold_seen: set[str] = set()
 
     for cand in COLD_PURCHASE_CHAMPIONS:
-        if cand not in cold_seen and is_active(cand):
+        if cand not in cold_seen and is_active(cand) and cand not in owned_pids:
             cold_results.append(cand)
             cold_seen.add(cand)
             if len(cold_results) == 10:
@@ -257,7 +278,7 @@ def rank_candidates(
     for cat in COLD_CATEGORIES:
         champs = CATEGORY_CHAMPIONS.get(cat, [])
         for cand in champs:
-            if cand not in cold_seen and is_active(cand):
+            if cand not in cold_seen and is_active(cand) and cand not in owned_pids:
                 cold_results.append(cand)
                 cold_seen.add(cand)
                 if len(cold_results) == 10:

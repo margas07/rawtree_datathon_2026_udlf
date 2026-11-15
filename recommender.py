@@ -42,7 +42,7 @@ from src.bandit import (  # noqa: E402
 from src.client import RawTreeClient  # noqa: E402
 from src.cold_start import build_catalog_features, fetch_segment_stats  # noqa: E402
 
-MODEL_VERSION = os.environ.get("MODEL_VERSION", "plutus-v1-cold")
+MODEL_VERSION = os.environ.get("MODEL_VERSION", "plutus-v1-dedup")
 
 COLD_FEATURES_REFRESH_S = float(os.environ.get("COLD_FEATURES_REFRESH_S", 300))
 
