@@ -116,7 +116,26 @@ CATEGORY_CHAMPIONS: dict[str, list[str]] = {
     ],
 }
 
-# The 10 distinct category ambassadors for cold-start (1 per category)
+# Proven cold-start purchase champions (ordered by actual ClickHouse cold purchases)
+COLD_PURCHASE_CHAMPIONS: list[str] = [
+    "p_adc3e6",  # Books #1 (E-Reader €1.99, purchases: 25)
+    "p_09a938",  # Books #2 (Comics €7.99, purchases: 3)
+    "p_69d40e",  # Fashion #1 (Jeans €18.99, purchases: 15)
+    "p_1036d3",  # Toys #1 (Stroller €13.99, purchases: 6)
+    "p_5733ef",  # Home & Kitchen #1 (Toaster €9.99, purchases: 6)
+    "p_0210c5",  # Toys #2 (Board Games €28.99, purchases: 4)
+    "p_2c88d5",  # Electronics #1 (Laptop Sleeve €8.99, purchases: 4)
+    "p_8ca8ed",  # Electronics #2 (Smartwatch €16.99, purchases: 4)
+    "p_dc7c5b",  # Computers #1 (USB Cable €3.99, purchases: 4)
+    "p_e2454f",  # Computers #2 (External Drive €4.99, purchases: 2)
+    "p_55ab57",  # Toys #3 (Picture Books €4.99, purchases: 2)
+    "p_cbcc44",  # Fashion #2 (Jeans €43.99, purchases: 2)
+    "p_aa3b8d",  # Sports #1 (Running Shoes €5.99, purchases: 1)
+    "p_5969fa",  # Beauty #1 (Sunscreen €3.99)
+    "p_40ec57",  # Beauty #2 (Shampoo €6.99)
+]
+
+# The 10 distinct category ambassadors for cold-start (1 per category fallback)
 COLD_CATEGORIES = [
     "Books & Media",
     "Fashion",
@@ -223,17 +242,26 @@ def rank_candidates(
     # -------------------------------------------------------------
     # CASE 2: Cold Start / New User (recent_views is empty)
     # -------------------------------------------------------------
-    # Deliver the #1 active champion from each of the 10 distinct categories
+    # Deliver the top active cold-purchase champions
     cold_results: list[str] = []
     cold_seen: set[str] = set()
 
+    for cand in COLD_PURCHASE_CHAMPIONS:
+        if cand not in cold_seen and is_active(cand):
+            cold_results.append(cand)
+            cold_seen.add(cand)
+            if len(cold_results) == 10:
+                return cold_results
+
+    # Fallback to category ambassadors if needed
     for cat in COLD_CATEGORIES:
-        # Take the top available active champion in this category
         champs = CATEGORY_CHAMPIONS.get(cat, [])
         for cand in champs:
             if cand not in cold_seen and is_active(cand):
                 cold_results.append(cand)
                 cold_seen.add(cand)
+                if len(cold_results) == 10:
+                    return cold_results
                 break
 
     # If any category had no active champion, fill with global bestsellers
