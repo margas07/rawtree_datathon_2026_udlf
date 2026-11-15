@@ -120,6 +120,20 @@ FROM (
 )
 GROUP BY p"""
 
+SQL_USER_PURCHASES_INIT = """
+SELECT user_id::String AS uid, groupArray(product_id::String) AS pids
+FROM (
+    SELECT user_id, product_id FROM shop.history_events WHERE event_type = 'purchase'
+    UNION ALL
+    SELECT user_id, product_id FROM shop.events WHERE event_type = 'purchase'
+)
+GROUP BY uid"""
+
+SQL_USER_PURCHASES_RECENT = """
+SELECT user_id::String AS uid, product_id::String AS pid
+FROM shop.events
+WHERE event_type = 'purchase' AND ts > now() - INTERVAL 5 MINUTE"""
+
 
 def load_env() -> tuple[str, str, str]:
     """Carga RAWTREE_API_URL, TEAM_ID y RAWTREE_API_KEY desde .env (raíz del repo) o entorno."""
@@ -174,6 +188,7 @@ class LiveCache:
         self.organic_cvr_60d: dict[str, float] = {}
         self.velocity: dict[str, float] = {}
         self.covisited: dict[str, list[str]] = {}
+        self.user_purchases: dict[str, set[str]] = {}
         self.active_products: set[str] = set()
         self.new_products: set[str] = set()
         # P3 integration: bandit state + cold-start features (filled by the
@@ -317,6 +332,7 @@ class LiveCache:
             },
             "velocity_spikes": [p for p in self.trends["spikes"] if p in active],
             "best_sellers": [p for p in self.trends["best_sellers"] if p in active],
+            "user_purchases": self.user_purchases,
             "updated_at": time.time(),
         }
 
@@ -360,10 +376,13 @@ class LiveCache:
                 print(f"[state_manager] covisited history init skipped: {e}")
 
             try:
-                cov_hist = self._query(sess, SQL_COVISITED_HISTORY, timeout=25.0)
-                self._merge_covisited_rows(cov_hist)
+                user_rows = self._query(sess, SQL_USER_PURCHASES_INIT, timeout=25.0)
+                self.user_purchases = {
+                    str(r["uid"]): set(r["pids"]) for r in user_rows if r.get("uid")
+                }
+                print(f"[state_manager] loaded {len(self.user_purchases)} user purchase histories")
             except Exception as e:
-                print(f"[state_manager] covisited history init skipped: {e}")
+                print(f"[state_manager] user_purchases init skipped: {e}")
 
             try:
                 self._refresh_trends(sess)
@@ -428,6 +447,16 @@ class LiveCache:
             self._merge_covisited_rows(cov_live)
         except Exception as e:
             print(f"[state_manager] covisited live refresh skipped: {e}")
+
+        try:
+            recent_buys = self._query(sess, SQL_USER_PURCHASES_RECENT, timeout=6.0)
+            for r in recent_buys:
+                u = str(r.get("uid", ""))
+                p = str(r.get("pid", ""))
+                if u and p:
+                    self.user_purchases.setdefault(u, set()).add(p)
+        except Exception as e:
+            pass
 
         self._write_to_scratch(sess)
         return True

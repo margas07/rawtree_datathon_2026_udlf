@@ -42,7 +42,7 @@ from src.bandit import (  # noqa: E402
 from src.client import RawTreeClient  # noqa: E402
 from src.cold_start import build_catalog_features, fetch_segment_stats  # noqa: E402
 
-MODEL_VERSION = os.environ.get("MODEL_VERSION", "plutus-v2")
+MODEL_VERSION = os.environ.get("MODEL_VERSION", "plutus-v1-dedup")
 
 COLD_FEATURES_REFRESH_S = float(os.environ.get("COLD_FEATURES_REFRESH_S", 300))
 
@@ -146,7 +146,7 @@ def main() -> None:
             _cold_feature_loop(cache, client)
             print("[recommender] bandit state + feedback ingestor + cold-feature builder started")
 
-    seen = SeenWindow(maxlen=5000)
+    seen = SeenWindow(maxlen=25000)
     last_ts = ""
     latencies: deque[float] = deque(maxlen=500)
     last_stats_log = time.time()
@@ -186,7 +186,7 @@ def main() -> None:
 
         elapsed = time.monotonic() - loop_t0
         if not reqs:
-            time.sleep(max(0.0, 0.08 - elapsed))
+            time.sleep(max(0.0, 0.02 - elapsed))
 
 
 if __name__ == "__main__":
